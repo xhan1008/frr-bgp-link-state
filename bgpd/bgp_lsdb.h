@@ -16,13 +16,10 @@
 /* The key of bgp_lsdb hash table*/
 typedef struct prefix bgp_lsdb_key_t;
 
-struct bgp_lsdb {
-
-    unsigned long count;        // num of node nlri
-    // unsigned long count_self;
-    // unsigned int checksum;
+struct bgp_lsdb 
+{
     struct route_table *db;
-
+    unsigned long count;        // num of node nlri
 	unsigned long total;        // num of nlri
 };
 
@@ -30,7 +27,17 @@ typedef struct node_descriptor
 {
     uint32_t AS_num;
     uint32_t router_id;
-    uint64_t sequence_num;
+    
+
+    /* draft-ietf-lsvr-bgp-spf-28 6.1: seq包含在local Node中？*/
+    uint64_t sequence_num;  
+} node_descriptor_t;
+
+typedef struct node_nlri
+{
+    node_descriptor_t local_node;
+
+    uint64_t sequence_num;  // sequence_num 和 (node, link)之间的对应关系？？？ 
     uint8_t spf_capacity;
     uint8_t spf_state;
 
@@ -48,9 +55,18 @@ typedef struct link_nlri
 {
     uint8_t spf_state;
     uint32_t metric;
+    uint64_t sequence_num;
 
-    node_nlri_t* local_node;
-    node_nlri_t remote_node;
+    /* All of reference count, also lock to remove. */
+	int lock;
+
+    /* draft-ietf-lsvr-bgp-spf-28 6.1
+       Link or Prefix NLRI is no longer being advertised
+       by the local node, the NLRI is withdrawn. */
+    node_descriptor_t local_node;
+    node_descriptor_t remote_node;
+
+    /* link descriptor */
     struct prefix_ipv6 local_prefix;
     struct prefix_ipv6 remote_prefix;
 
@@ -59,39 +75,71 @@ typedef struct link_nlri
 
 typedef struct prefix_ip6_nlri 
 {
-    node_nlri_t* local_node;
-
     uint32_t metric;
     struct prefix_ipv6 prefix;
+
+    /* All of reference count, also lock to remove. */
+	int lock;
     
+    node_descriptor_t local_node;
     struct route_node* rn;
 }prefix_ip6_nlri_t;
 
+#define NLRI_SEQ(x) (x->local_node.sequence_num)
 
+/* route table delegate function */
+
+void *bgp_lsdb_node_rn_delete(route_table_delegate_t *delegate,
+			struct route_table *table, struct route_node *node)
+void *bgp_lsdb_link_rn_delete(route_table_delegate_t *delegate,
+			struct route_table *table, struct route_node *node)
+void *bgp_lsdb_prefix6_rn_delete(route_table_delegate_t *delegate,
+			struct route_table *table, struct route_node *node)
 
 
 
 /* lsdb function*/
-extern struct bgp_lsdb *bgp_lsdb_new(void);
-extern void bgp_lsdb_delete(struct bgp_lsdb* lsdb);
+
+extern struct bgp_lsdb *bgp_lsdb_create(void);
+extern void bgp_lsdb_delete_entry(struct bgp_lsdb* lsdb, struct route_node* rn);
+extern void bgp_lsdb_delete_all(struct bgp_lsdb* lsdb);
+
 
 /* nlri */
-extern struct node_descriptor* new_node_descriptor(void);
 
+static void delete_node_nlri(node_nlri_t* nn);
+extern node_nlri_t* new_node_nlri(void);
+extern node_nlri_t* bgp_node_nlri_lock(node_nlri_t* nn);
+extern void bgp_node_nlri_unlock(node_nlri_t** nn);
 
-/* Add */
-static void bgp_lsdb_add_node(struct bgp_lsdb* lsdb, struct node_descriptor* nd);
+static void delete_link_nlri(link_nlri_t** ln);
+extern node_nlri_t* new_link_nlri(void);
+extern link_nlri_t* bgp_link_nlri_lock(link_nlri_t* ln);
+extern void bgp_link_nlri_unlock(link_nlri_t** ln);
+
+static void delete_prefix_ip6_nlri(prefix_ip6_nlri_t** p6n);
+extern node_nlri_t* new_prefix_ip6_nlri(void);
+extern link_nlri_t* bgp_prefix_ip6_nlri_lock(prefix_ip6_nlri_t* p6n);
+extern void bgp_prefix_ip6_nlri_unlock(prefix_ip6_nlri_t** p6n);
+
+/* Add func */
+
+static void bgp_lsdb_add_node(struct bgp_lsdb* lsdb, node_nlri_t* nn);
 static void bgp_lsdb_add_link(struct bgp_lsdb* lsdb, struct link_nlri* ln);
-static void bgp_lsdb_add_prefix_ip6(struct bgp_lsdb* lsdb, struct prefix_ip6_nlri* p6l);
-extern struct bgp_lsdb* bgp_lsdb_add(struct bgp_lsdb* lsdb, int nlri_type, void* nlri);
+static void bgp_lsdb_add_prefix_ip6(struct bgp_lsdb* lsdb, struct prefix_ip6_nlri* p6n);
+extern struct bgp_lsdb* bgp_lsdb_add(struct bgp_lsdb* lsdb, int nlri_type, void* nlri) ;
 
-/* Delete */
-static void bgp_lsdb_delete_node(struct bgp_lsdb* lsdb, struct node_descriptor* nd);
-static void bgp_lsdb_delete_link(struct bgp_lsdb* lsdb, struct link_nlri* ln);
-static void bgp_lsdb_delete_prefix_ip6(struct bgp_lsdb* lsdb, struct prefix_ip6_nlri* p6l);
+
+/* Delete func */
+
+static void bgp_lsdb_delete_node(struct bgp_lsdb* lsdb, node_nlri_t* nd);
+static void bgp_lsdb_delete_link(struct bgp_lsdb* lsdb, link_nlri_t* ln);
+static void bgp_lsdb_delete_prefix_ip6(struct bgp_lsdb* lsdb, prefix_ip6_nlri_t*);
 extern struct bgp_lsdb* bgp_lsdb_delete(struct bgp_lsdb* lsdb, int nlri_type, void* nlri);
 
+
 /* Lookup */
+
 static void bgp_lsdb_lookup_node(struct route_table* table, bgp_lsdb_key_t* nd);
 static void bgp_lsdb_lookup_link(struct route_table* lsdb, bgp_lsdb_key_t* ln);
 static void bgp_lsdb_lookup_prefix_ip6(struct route_table* lsdb, bgp_lsdb_key_t* p6l);
